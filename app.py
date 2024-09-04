@@ -3,6 +3,8 @@
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 import google.generativeai as genai
+from flask_socketio import SocketIO, emit
+import pyttsx3
 import os
 import re
 
@@ -10,6 +12,9 @@ import re
 dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
 load_dotenv(dotenv_path)
 app = Flask(__name__)
+socketio = SocketIO(app)
+
+tts = pyttsx3.init('dummy') 
 
 # Configure the Gemini API
 genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
@@ -105,5 +110,65 @@ def evaluate_answer():
         print(f"Error evaluating answer: {str(e)}")
         return jsonify({"error": "Failed to evaluate answer. Please try again."}), 500
 
+# WebSocket event handler for client connection
+@socketio.on('connect')
+def handle_connect():
+    print('Client connected')
+    emit('message', {'data': 'Welcome to the interview simulator!'})
+    ask_question()
+
+def ask_question():
+    prompt = """
+    Generate a JavaScript coding interview question based on the following criteria:
+    
+    Topic: JavaScript
+    Difficulty: Medium
+
+    Please provide:
+    1. A technical coding question that requires writing JavaScript code.
+    2. The expected code solution.
+    3. An explanation of the solution.
+
+    Format your response as follows:
+    Question: [Your generated question here]
+    Solution: [The expected JavaScript code solution]
+    Explanation: [Explanation of the solution]
+    """
+
+    try:
+        response = model.generate_content(prompt)
+        question = response.text.split("Solution:")[0].replace("Question:", "").strip()
+        emit('interview_question', {'data': question})
+    except Exception as e:
+        print(f"Error generating question: {str(e)}")
+        emit('interview_question', {'error': 'Failed to generate question. Please try again.'})
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    print('Client disconnected')
+
+@socketio.on('audio_data')
+def handle_audio_data(audio_data):
+    print("Received audio data from client.")
+
+    try:
+        prompt = "Process this audio data and generate a response."
+        response = model.generate_content(prompt, audio=audio_data)
+        ai_response = response.text
+
+        # Convert AI response text to speech using py3-tts
+        tts.speak(ai_response)
+        
+        # Block while processing all the currently queued commands
+        tts.runAndWait()
+
+        # Send a success message back to the client
+        emit('ai_response', {'data': ai_response})
+
+    except Exception as e:
+        print(f"Error processing audio data: {str(e)}")
+        emit('ai_response', {'error': 'Failed to process audio data. Please try again.'})
+        
+        
 if __name__ == '__main__':
-    app.run(debug=True)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True)

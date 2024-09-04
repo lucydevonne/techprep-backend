@@ -1,3 +1,5 @@
 flask
 google-generativeai
 python-dotenv
+py3-tts
+flask-socketio
