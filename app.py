@@ -28,96 +28,6 @@ tts = pyttsx3.init('dummy')
 genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-@app.route('/generate_question', methods=['POST'])
-def generate_question():
-    data = request.json
-    topic = data.get('topic', 'JavaScript')
-    difficulty = data.get('difficulty', 'Medium')
-    
-    prompt = f"""
-    Generate a JavaScript coding interview question based on the following criteria:
-    
-    Topic: {topic}
-    Difficulty: {difficulty}
-
-    Please provide:
-    1. A technical coding question that requires writing JavaScript code.
-    2. The expected code solution.
-    3. An explanation of the solution.
-
-    Format your response as follows:
-    Question: [Your generated question here]
-    Solution: [The expected JavaScript code solution]
-    Explanation: [Explanation of the solution]
-    """
-
-    try:
-        response = model.generate_content(prompt)
-        
-        # Print the full response for debugging
-        print(f"Full AI response:\n{response.text}")
-        
-        # Parse the response
-        response_text = response.text
-        question_start = response_text.find("Question:")
-        solution_start = response_text.find("Solution:")
-        explanation_start = response_text.find("Explanation:")
-        
-        if question_start == -1 or solution_start == -1 or explanation_start == -1:
-            raise ValueError("Failed to find all required sections in the AI response")
-        
-        question = response_text[question_start:solution_start].replace("Question:", "").strip()
-        solution = response_text[solution_start:explanation_start].replace("Solution:", "").strip()
-        explanation = response_text[explanation_start:].replace("Explanation:", "").strip()
-        
-        return jsonify({
-            "question": question,
-            "solution": solution,
-            "explanation": explanation
-        })
-    
-    except Exception as e:
-        print(f"Error generating question: {str(e)}")
-        return jsonify({"error": "Failed to generate question. Please try again."}), 500
-
-@app.route('/evaluate_answer', methods=['POST'])
-def evaluate_answer():
-    data = request.json
-    question = data.get('question')
-    user_answer = data.get('answer')
-    expected_solution = data.get('solution')
-
-    prompt = f"""
-    Question: {question}
-    
-    Expected Solution:
-    {expected_solution}
-    
-    User's Answer:
-    {user_answer}
-    
-    Evaluate the user's JavaScript code answer against the expected solution. Provide feedback on:
-    1. Correctness: Does it solve the problem?
-    2. Efficiency: Is it an optimal solution?
-    3. Code style: Is it well-written and following best practices?
-    4. Suggestions for improvement.
-    
-    Format your response as a JSON string with the following keys:
-    {{
-        "correctness": "score from 0-10",
-        "efficiency": "score from 0-10",
-        "style": "score from 0-10",
-        "feedback": "detailed feedback and suggestions"
-    }}
-    """
-
-    try:
-        response = model.generate_content(prompt)
-        return response.text  # This should be a JSON string
-    except Exception as e:
-        print(f"Error evaluating answer: {str(e)}")
-        return jsonify({"error": "Failed to evaluate answer. Please try again."}), 500
-
 # WebSocket event handler for client connection
 @socketio.on('connect')
 def handle_connect():
@@ -125,32 +35,36 @@ def handle_connect():
     emit('message', {'data': 'Welcome to the interview simulator!'})
     ask_question()
 
-def ask_question():
-    prompt = """
-    Generate a JavaScript coding interview question based on the following criteria:
-    
-    Topic: JavaScript
-    Difficulty: Medium
+current_question = ""
+interviewer_notes = ""
 
-    Please provide:
-    1. A technical coding question that requires writing JavaScript code.
-    2. The expected code solution.
-    3. An explanation of the solution.
+def ask_question():
+    global current_question, interviewer_notes
+    prompt = """
+    As an experienced JavaScript interviewer, generate a coding interview question for a mid-level JavaScript developer position. Follow these guidelines:
+    
+    1. Topic: Choose a relevant JavaScript concept (e.g., closures, promises, async/await, prototypes, etc.)
+    2. Difficulty: Medium level
+    3. Question Type: Ask the candidate to write a function or explain a concept with code
 
     Format your response as follows:
-    Question: [Your generated question here]
-    Solution: [The expected JavaScript code solution]
-    Explanation: [Explanation of the solution]
+    Question: [Your generated interview question here]
+    Interviewer Notes: [Brief notes on what to look for in the answer, not to be shared with the candidate]
+
+    Remember to be concise and clear in your question, as if you're speaking directly to the candidate.
     """
 
     try:
         response = model.generate_content(prompt)
-        question = response.text.split("Solution:")[0].replace("Question:", "").strip()
-        emit('interview_question', {'data': question})
+        question_parts = response.text.split("Interviewer Notes:")
+        current_question = question_parts[0].replace("Question:", "").strip()
+        interviewer_notes = question_parts[1].strip() if len(question_parts) > 1 else ""
+        
+        update_conversation_history(f"Interviewer: {current_question}")
+        emit('interview_question', {'data': current_question})
     except Exception as e:
         print(f"Error generating question: {str(e)}")
         emit('interview_question', {'error': 'Failed to generate question. Please try again.'})
-
 @socketio.on('disconnect')
 def handle_disconnect():
     print('Client disconnected')
@@ -191,7 +105,7 @@ def generate_gemini_response(prompt, audio_data=None):
         try:
             context = get_conversation_context()
             full_prompt = f"{context}\n\n{prompt}"
-            
+            print(f"Sending prompt to Gemini API:\n{full_prompt}")
             if audio_data:
                 response = model.generate_content([
                     full_prompt,
@@ -214,6 +128,7 @@ def generate_gemini_response(prompt, audio_data=None):
 
 @socketio.on('audio_data')
 def handle_audio_data(audio_data):
+    global current_question
     print("Received audio data from client.")
 
     try:
@@ -235,12 +150,29 @@ def handle_audio_data(audio_data):
             audio_data = f.read()
 
         print("Sending audio data to Gemini API")
-        prompt = "Transcribe the audio and then, as an AI interviewer for a JavaScript coding position, provide a relevant response or follow-up question based on the transcription."
+        prompt = f"""
+        As an AI JavaScript interviewer, you're conducting a coding interview. The current question is:
+
+        {current_question}
+
+        Interviewer Notes: {interviewer_notes}
+
+        The candidate has just provided an audio response. Your task is to:
+        1. Briefly summarize the candidate's response (1-2 sentences).
+        2. Provide a follow-up question or request for clarification based on their answer.
+        3. If needed, guide the candidate towards a better solution without giving it away completely.
+
+        Maintain a professional and encouraging tone throughout your response. Your goal is to assess the candidate's knowledge and problem-solving skills, not to trick them.
+
+        Format your response as:
+        Summary: [Brief summary of candidate's response]
+        Follow-up: [Your follow-up question or request for clarification]
+        """
         ai_response = generate_gemini_response(prompt, audio_data)
 
         if ai_response:
             print(f"Received response from Gemini API: {ai_response}")
-            update_conversation_history(ai_response)
+            update_conversation_history(f"Candidate: [Audio Response]\nInterviewer: {ai_response}")
             emit('ai_response', {'text': ai_response})
         else:
             raise Exception("Failed to generate response from Gemini API")
