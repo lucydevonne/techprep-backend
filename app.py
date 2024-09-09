@@ -19,11 +19,12 @@ dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
 load_dotenv(dotenv_path)
 
 app = Flask(__name__)
-# Configure CORS
-CORS(app, resources={r"/*": {"origins": "http://localhost:3000"}})
+
+# Configure CORS to allow requests from Vercel frontend
+CORS(app, resources={r"/*": {"origins": "https://techprep-frontend.vercel.app"}})
 
 # Initialize SocketIO with CORS settings
-socketio = SocketIO(app, cors_allowed_origins="http://localhost:3000")
+socketio = SocketIO(app, cors_allowed_origins="https://techprep-frontend.vercel.app")
 
 # Configure the Gemini API
 genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
@@ -41,6 +42,10 @@ MAX_HISTORY_LENGTH = 5
 
 current_question = ""
 interviewer_notes = ""
+
+@app.route('/')
+def home():
+    return "Hello, Welcome to TechPrep!"
 
 def rate_limited(f):
     @wraps(f)
